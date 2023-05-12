@@ -9,46 +9,46 @@ import gc
 
 
 class Trainer(object):
-    def __init__(self, args):
-        self.config = args
+    def __init__(self, config):
+        self.config = config
         # parameters
         self.start_epoch = 1
-        self.max_epoch = args.max_epoch
-        self.save_dir = args.save_dir
-        self.device = args.device
-        self.verbose = args.verbose
-        self.max_points = args.max_points
+        self.max_epoch = config.max_epoch
+        self.save_dir = config.save_dir
+        self.device = config.device
+        self.verbose = config.verbose
+        self.max_points = config.max_points
 
-        self.model = args.model.to(self.device)
-        self.optimizer = args.optimizer
-        self.scheduler = args.scheduler
-        self.scheduler_freq = args.scheduler_freq
-        self.snapshot_freq = args.snapshot_freq
-        self.snapshot_dir = args.snapshot_dir
-        self.benchmark = args.benchmark
-        self.iter_size = args.iter_size
-        self.verbose_freq = args.verbose_freq
+        self.model = config.model.to(self.device)
+        self.optimizer = config.optimizer
+        self.scheduler = config.scheduler
+        self.scheduler_freq = config.scheduler_freq
+        self.snapshot_freq = config.snapshot_freq
+        self.snapshot_dir = config.snapshot_dir
+        self.benchmark = config.benchmark
+        self.iter_size = config.iter_size
+        self.verbose_freq = config.verbose_freq
 
-        self.w_circle_loss = args.w_circle_loss
-        self.w_overlap_loss = args.w_overlap_loss
-        self.w_saliency_loss = args.w_saliency_loss
-        self.desc_loss = args.desc_loss
+        self.w_circle_loss = config.w_circle_loss
+        self.w_overlap_loss = config.w_overlap_loss
+        self.w_saliency_loss = config.w_saliency_loss
+        self.desc_loss = config.desc_loss
 
         self.best_loss = 1e5
         self.best_recall = -1e5
-        self.writer = SummaryWriter(log_dir=args.tboard_dir)
-        self.logger = Logger(args.snapshot_dir)
+        self.writer = SummaryWriter(log_dir=config.tboard_dir)
+        self.logger = Logger(config.snapshot_dir)
         self.logger.write(f'#parameters {sum([x.nelement() for x in self.model.parameters()]) / 1000000.} M\n')
 
-        if args.pretrain != '':
-            self._load_pretrain(args.pretrain)
+        if config.pretrain != '':
+            self._load_pretrain(config.pretrain)
 
         self.loader = dict()
-        self.loader['train'] = args.train_loader
-        self.loader['val'] = args.val_loader
-        self.loader['test'] = args.test_loader
+        self.loader['train'] = config.train_loader
+        self.loader['val'] = config.val_loader
+        self.loader['test'] = config.test_loader
 
-        with open(f'{args.snapshot_dir}/model', 'w') as f:
+        with open(f'{config.snapshot_dir}/model', 'w') as f:
             f.write(str(self.model))
         f.close()
 

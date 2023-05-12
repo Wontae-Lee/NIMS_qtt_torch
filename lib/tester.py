@@ -9,8 +9,8 @@ class IndoorTester(Trainer):
     3DMatch tester
     """
 
-    def __init__(self, args):
-        Trainer.__init__(self, args)
+    def __init__(self, config):
+        Trainer.__init__(self, config)
 
     def test(self):
         print('Start to evaluate on test datasets...')

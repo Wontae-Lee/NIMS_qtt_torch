@@ -99,3 +99,4 @@ class Config:
         # undefined parameters
         self.architecture = None
         self.model = None
+        self.desc_loss = None
