@@ -39,7 +39,7 @@ class SimpleBlock(nn.Module):
                              deformable='deform' in block_name,
                              modulated=config.modulated)
 
-        # Other opperations
+        # Other operations
         self.batch_norm = BatchNormBlock(out_dim // 2, self.use_bn, self.bn_momentum)
         self.leaky_relu = nn.LeakyReLU(0.1)
 
