@@ -16,14 +16,14 @@ class Config:
 
         # model:
         self.num_layers = 4
-        self.in_points_dim = 3
+        self.nfeatures_pts = 3
         self.first_feats_dim = 128
         self.final_feats_dim = 32
         self.first_subsampling_dl = 0.025
         self.in_feats_dim = 1
         self.conv_radius = 2.5
         self.deform_radius = 5.0
-        self.num_kernel_points = 15
+        self.kernel_size = 15
         self.kp_extent = 2.0
         self.kp_influence = "linear"
         self.aggregation_mode = "sum"

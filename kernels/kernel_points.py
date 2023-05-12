@@ -23,6 +23,47 @@ import matplotlib.pyplot as plt
 from torch.utils.hipify.hipify_python import bcolors
 
 
+# ------------------------------------------------------------------------------------------
+#
+#           Functions
+#       \***************/
+#
+#
+
+def create_3d_rotations(axis, angle):
+    """
+    Create rotation matrices from a list of axes and angles. Code from wikipedia on quaternions
+    :param axis: float32[N, 3]
+    :param angle: float32[N,]
+    :return: float32[N, 3, 3]
+    """
+
+    t1 = np.cos(angle)
+    t2 = 1 - t1
+    t3 = axis[:, 0] * axis[:, 0]
+    t6 = t2 * axis[:, 0]
+    t7 = t6 * axis[:, 1]
+    t8 = np.sin(angle)
+    t9 = t8 * axis[:, 2]
+    t11 = t6 * axis[:, 2]
+    t12 = t8 * axis[:, 1]
+    t15 = axis[:, 1] * axis[:, 1]
+    t19 = t2 * axis[:, 1] * axis[:, 2]
+    t20 = t8 * axis[:, 0]
+    t24 = axis[:, 2] * axis[:, 2]
+    R = np.stack([t1 + t2 * t3,
+                  t7 - t9,
+                  t11 + t12,
+                  t7 + t9,
+                  t1 + t2 * t15,
+                  t19 - t20,
+                  t11 - t12,
+                  t19 + t20,
+                  t1 + t2 * t24], axis=1)
+
+    return np.reshape(R, (-1, 3, 3))
+
+
 def spherical_lloyd(radius, num_cells, dimension=3, fixed='center', approximation='monte-carlo',
                     approx_n=5000, max_iter=500, momentum=0.9, verbose=0):
     """
@@ -146,7 +187,7 @@ def spherical_lloyd(radius, num_cells, dimension=3, fixed='center', approximatio
             d2 = np.sum(np.power(X, 2), axis=1)
             X = X[d2 < radius0 * radius0, :]
 
-        # Get the distances matrix [n_approx, K, dim]
+        # Get the distances matrix [n_approx, kernel_size, dim]
         differences = np.expand_dims(X, 1) - kernel_points
         sq_distances = np.sum(np.square(differences), axis=2)
 
@@ -182,51 +223,235 @@ def spherical_lloyd(radius, num_cells, dimension=3, fixed='center', approximatio
             if warning:
                 print('{:}WARNING: at least one point has no cell{:}'.format(bcolors.WARNING, bcolors.ENDC))
         if verbose > 1:
+            if verbose > 1:
+                plt.clf()
+                plt.scatter(X[:, 0], X[:, 1], c=cell_inds, s=20.0,
+                            marker='.', cmap=plt.get_cmap('tab20'))
+                # plt.scatter(kernel_points[:, 0], kernel_points[:, 1], c=np.arange(num_cells), s=100.0,
+                #            marker='+', cmap=plt.get_cmap('tab20'))
+                plt.plot(kernel_points[:, 0], kernel_points[:, 1], 'kernel_size+')
+                circle = plt.Circle((0, 0), radius0, color='r', fill=False)
+                fig.axes[0].add_artist(circle)
+                fig.axes[0].set_xlim((-radius0 * 1.1, radius0 * 1.1))
+                fig.axes[0].set_ylim((-radius0 * 1.1, radius0 * 1.1))
+                fig.axes[0].set_aspect('equal')
+                plt.draw()
+                plt.pause(0.001)
+                plt.show(block=False)
+
+            ###################
+            # User verification
+            ###################
+
+            # Show the convergence to ask user if this kernel is correct
+        if verbose:
+            if dimension == 2:
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=[10.4, 4.8])
+                ax1.plot(max_moves)
+                ax2.scatter(X[:, 0], X[:, 1], c=cell_inds, s=20.0,
+                            marker='.', cmap=plt.get_cmap('tab20'))
+                # plt.scatter(kernel_points[:, 0], kernel_points[:, 1], c=np.arange(num_cells), s=100.0,
+                #            marker='+', cmap=plt.get_cmap('tab20'))
+                ax2.plot(kernel_points[:, 0], kernel_points[:, 1], 'kernel_size+')
+                circle = plt.Circle((0, 0), radius0, color='r', fill=False)
+                ax2.add_artist(circle)
+                ax2.set_xlim((-radius0 * 1.1, radius0 * 1.1))
+                ax2.set_ylim((-radius0 * 1.1, radius0 * 1.1))
+                ax2.set_aspect('equal')
+                plt.title('Check if kernel is correct.')
+                plt.draw()
+                plt.show()
+
+            if dimension > 2:
+                plt.figure()
+                plt.plot(max_moves)
+                plt.title('Check if kernel is correct.')
+                plt.show()
+
+        # Rescale kernels with real radius
+        return kernel_points * radius
+
+
+def kernel_point_optimization_debug(radius, num_points, num_kernels=1, dimension=3,
+                                    fixed='center', ratio=0.66, verbose=0):
+    """
+    Creation of kernel point via optimization of potentials.
+    :param radius: Radius of the kernels
+    :param num_points: points composing kernels
+    :param num_kernels: number of wanted kernels
+    :param dimension: dimension of the space
+    :param fixed: fix position of certain kernel points ('none', 'center' or 'verticals')
+    :param ratio: ratio of the radius where you want the kernels points to be placed
+    :param verbose: display option
+    :return: points [num_kernels, num_points, dimension]
+    """
+
+    #######################
+    # Parameters definition
+    #######################
+
+    # Radius used for optimization (points are rescaled afterwards)
+    radius0 = 1
+    diameter0 = 2
+
+    # Factor multiplicating gradients for moving points (~learning rate)
+    moving_factor = 1e-2
+    continuous_moving_decay = 0.9995
+
+    # Gradient threshold to stop optimization
+    thresh = 1e-5
+
+    # Gradient clipping value
+    clip = 0.05 * radius0
+
+    #######################
+    # Kernel initialization
+    #######################
+
+    # Random kernel points
+    # 최초의 kernel points는 커널 수 X 포인트의 수 X dimension의 수 (여기서는 coordinates 3) 가 되어야한다.
+    # 랜덤으로 kernel points를 하나 적게 생성한 이유는 커널 수 X 포인트의 수 X dimension의 수 (여기서는 coordinates 3)을 밑에 while 문의 조건으로 사용하기 위해서이다.
+    kernel_points = np.random.rand(num_kernels * num_points - 1, dimension) * diameter0 - radius0
+
+    while kernel_points.shape[0] < num_kernels * num_points:
+        new_points = np.random.rand(num_kernels * num_points - 1, dimension) * diameter0 - radius0
+        kernel_points = np.vstack((kernel_points, new_points))
+        d2 = np.sum(np.power(kernel_points, 2), axis=1)
+        # (0,0,0) 을 기준으로 distance의 제곱의 크기가 radius0의 제곱의 크기의 절반 보다 작은 kernel points만 선택
+        # -좌표축 +좌표축이니까 0.5를 곱한 듯
+        kernel_points = kernel_points[d2 < 0.5 * radius0 * radius0, :]
+
+    kernel_points = kernel_points[:num_kernels * num_points, :].reshape((num_kernels, num_points, -1))
+
+    # Optionnal fixing
+    if fixed == 'center':
+        # kernel_points에서 (0,0,0)을 각 kernel points에서 포함
+        kernel_points[:, 0, :] *= 0
+
+    if fixed == 'verticals':
+        kernel_points[:, :3, :] *= 0
+        kernel_points[:, 1, -1] += 2 * radius0 / 3
+        kernel_points[:, 2, -1] -= 2 * radius0 / 3
+
+    #####################
+    # Kernel optimization
+    #####################
+
+    fig = None
+    # Initialize figure
+    if verbose > 1:
+        fig = plt.figure()
+
+    # grandient가 어떻게 바뀌는지 기록용 np array
+    saved_gradient_norms = np.zeros((10000, num_kernels))
+
+    # 이전 gradient
+    old_gradient_norms = np.zeros((num_kernels, num_points))
+    for ITER in range(10000):
+
+        # Compute gradients
+        # *****************
+
+        # Derivative of the sum of potentials of all points
+        # np expand_dim는 Insert a new axis that will appear at the axis position in the expanded array shape.
+        # A.shape(nKernel, nPoints, 1, nDim = coordinats(x,y,z) = 3)
+        A = np.expand_dims(kernel_points, axis=2)
+        # B.shape(nKernel, 1, nPoints, nDim = coordinats(x,y,z) = 3)
+        B = np.expand_dims(kernel_points, axis=1)
+
+        # A-B 하면 np 브로드캐스팅에 의하여 (하나의 kernel points에서 다른 모든 kernel points사이의 좌표 (xA - xB, yA- yB, zA-zB)가 된다.
+        # 그 다음에 (xA - xB)^2 + (yA- yB)^2 + (zA-zB)^2 으로 차원을 줄이면
+        # 하나의 커널 포인트에서 다른 모든 커널 포인트 사이의 거리의 제곱이 된다.
+        interd2 = np.sum(np.power(A - B, 2), axis=-1)
+
+        # inter grad의 정확한 의미를 잘모르겠다.
+        # 어쨋든 밑에서의 의미는 하나의 포인트에서 각 포인트 사이의 거리의 세재곱을 각 x, y, z에 나누어준다.
+        inter_grads = (A - B) / (np.power(np.expand_dims(interd2, -1), 3 / 2) + 1e-6)
+
+        # 그다음 x는 x끼리 y는 y끼리 z는 z끼리 하나의 kernal point에서 다른 kernal point의 internal grad값을 합친다.
+        inter_grads = np.sum(inter_grads, axis=1)
+
+        # Derivative of the radius potential
+        # circle_grads 는 임의적으로 커널포인트의 좌표값의 10로 한다.
+        # 단순히 kernel_points를 생성한 방식을 반복하기 때문에 10을 곱해준 것 같다.
+        # 아닐 수도 있다. 왜지? 왜 곱하기 10했지?
+        # 문자 그대로 각 kernel 포인트의 중심에서 멀면 멀수록 기울기는 커지네
+        # 그로인해 멀리 있는 포인트는 더욱 빠르게 밖으로 멀어지네??
+        circle_grads = 10 * kernel_points
+
+        # All gradients
+        gradients = inter_grads + circle_grads
+        if fixed == 'verticals':
+            gradients[:, 1:3, :-1] = 0
+
+        # Stop condition
+        # **************
+
+        # Compute norm of gradients
+        # 각 좌표값으로되어 있는 gradinets의 magnitude를 구한다.
+        gradients_norms = np.sqrt(np.sum(np.power(gradients, 2), axis=-1))
+
+        # 각 커널 포인트에서 가장 강한 그라디언트를 기록한다.
+        saved_gradient_norms[ITER, :] = np.max(gradients_norms, axis=1)
+
+        # Stop if all moving points are gradients fixed (low gradients diff)
+        # old_gradient_norm은 이전 iter 에서의 gradient고 gradient_norm 현재 iter에서 구한 gradient
+        if fixed == 'center' and np.max(np.abs(old_gradient_norms[:, 1:] - gradients_norms[:, 1:])) < thresh:
+            break
+        elif fixed == 'verticals' and np.max(np.abs(old_gradient_norms[:, 3:] - gradients_norms[:, 3:])) < thresh:
+            break
+        elif np.max(np.abs(old_gradient_norms - gradients_norms)) < thresh:
+            break
+        old_gradient_norms = gradients_norms
+
+        # Move points
+        # ***********
+
+        # Clip gradient to get moving dists
+        moving_dists = np.minimum(moving_factor * gradients_norms, clip)
+
+        # Fix central point
+        if fixed == 'center':
+            moving_dists[:, 0] = 0
+        if fixed == 'verticals':
+            moving_dists[:, 0] = 0
+
+        # Move points
+        # 각 포인트에서 x, y, z축은 동일한 거리를 움직이는 구나
+        kernel_points -= np.expand_dims(moving_dists, -1) * gradients / np.expand_dims(gradients_norms + 1e-6, -1)
+
+        if verbose:
+            print('iter {:5d} / max grad = {:f}'.format(ITER, np.max(gradients_norms[:, 3:])))
+        if verbose > 1:
             plt.clf()
-            plt.scatter(X[:, 0], X[:, 1], c=cell_inds, s=20.0,
-                        marker='.', cmap=plt.get_cmap('tab20'))
-            # plt.scatter(kernel_points[:, 0], kernel_points[:, 1], c=np.arange(num_cells), s=100.0,
-            #            marker='+', cmap=plt.get_cmap('tab20'))
-            plt.plot(kernel_points[:, 0], kernel_points[:, 1], 'k+')
-            circle = plt.Circle((0, 0), radius0, color='r', fill=False)
+            plt.plot(kernel_points[0, :, 0], kernel_points[0, :, 1], '.')
+            circle = plt.Circle((0, 0), radius, color='r', fill=False)
             fig.axes[0].add_artist(circle)
-            fig.axes[0].set_xlim((-radius0 * 1.1, radius0 * 1.1))
-            fig.axes[0].set_ylim((-radius0 * 1.1, radius0 * 1.1))
+            fig.axes[0].set_xlim((-radius * 1.1, radius * 1.1))
+            fig.axes[0].set_ylim((-radius * 1.1, radius * 1.1))
             fig.axes[0].set_aspect('equal')
             plt.draw()
             plt.pause(0.001)
             plt.show(block=False)
+            print(moving_factor)
 
-    ###################
-    # User verification
-    ###################
+        # moving factor decay
+        # continuous_moving_decay는 0.9995인데, moving_factor의 크기를 조금씩 줄여가면서 이동거리를 줄여가는 구나
+        moving_factor *= continuous_moving_decay
 
-    # Show the convergence to ask user if this kernel is correct
-    if verbose:
-        if dimension == 2:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=[10.4, 4.8])
-            ax1.plot(max_moves)
-            ax2.scatter(X[:, 0], X[:, 1], c=cell_inds, s=20.0,
-                        marker='.', cmap=plt.get_cmap('tab20'))
-            # plt.scatter(kernel_points[:, 0], kernel_points[:, 1], c=np.arange(num_cells), s=100.0,
-            #            marker='+', cmap=plt.get_cmap('tab20'))
-            ax2.plot(kernel_points[:, 0], kernel_points[:, 1], 'k+')
-            circle = plt.Circle((0, 0), radius0, color='r', fill=False)
-            ax2.add_artist(circle)
-            ax2.set_xlim((-radius0 * 1.1, radius0 * 1.1))
-            ax2.set_ylim((-radius0 * 1.1, radius0 * 1.1))
-            ax2.set_aspect('equal')
-            plt.title('Check if kernel is correct.')
-            plt.draw()
-            plt.show()
+    # Rescale radius to fit the wanted ratio of radius
+    r = np.sqrt(np.sum(np.power(kernel_points, 2), axis=-1))
 
-        if dimension > 2:
-            plt.figure()
-            plt.plot(max_moves)
-            plt.title('Check if kernel is correct.')
-            plt.show()
+    # kernel_points는 gradient에 따라서 이미 움직인 결과 물이고
+    # r은 하나의 포인트에서 다른 포인트 사이의 거리니까
+    # np.mean(r[:,1:]) 는 모든 커널에서 모든 포인트사이의 평균이니까
+    # 커널 포인트의 좌표에서 ratio에서 평균 거리를 나눈값을
+    # 이미 움직인 kernel points의 좌표값에 곱해줌.
+    kernel_points *= ratio / np.mean(r[:, 1:])
+
+    # kernel_points는 이 함수에서 임의로 만들어진 값이니까, 여기에 실제 radius 값을 곱하면 결론적으로 커널의 포인트 좌표값을 만들 수 있다.
     # Rescale kernels with real radius
-    return kernel_points * radius
+    return kernel_points * radius, saved_gradient_norms
 
 
 def load_kernels(radius, num_kpoints, dimension, fixed, lloyd=False):
@@ -247,3 +472,67 @@ def load_kernels(radius, num_kpoints, dimension, fixed, lloyd=False):
         if lloyd:
             # Create kernels
             kernel_points = spherical_lloyd(1.0, num_kpoints, dimension=dimension, fixed=fixed, verbose=0)
+
+        else:
+            # Create kernels
+            kernel_points, grad_norm = kernel_point_optimization_debug(1.0, num_kpoints, num_kernels=100,
+                                                                       dimension=dimension, fixed=fixed, verbose=0)
+            # print(grad_norm[-1, :]) = [0,0,0,0,...,0,0] 0이 100개
+            # 이거는 다시 확인을 해봐야겠다.
+            # grad_norm은 saved_gradientd_norms이니까
+            # 그러네 마지막꺼가 iter가 종료되었을때 save 그레디언트라서 -1 이 맞다고 할 수 있구나
+            # 하지만 아닐 수 있다 왜? save_gradient_norm은 zeros로 만들어진거잖아
+            # 따라서 그전에 iterator가 종료되면 실지로 종료전의 데이터는 9999번째 인덱스에 종료가 안되는데??
+            # 즉 수정이 필요하겠구나
+            # ***********************
+            # 수정하세요
+            # ***********************
+            # Find best candiate
+            best_k = np.argmin(grad_norm[-1, :])
+
+            # Save points
+            kernel_points = kernel_points[best_k]
+            write_ply(kernel_file, kernel_points, ['x', 'y', 'z'])
+
+    else:
+        data = read_ply(kernel_file)
+        kernel_points = np.vstack((data['x'], data['y'], data['z'])).T
+
+    # Random roations for the kernel
+    # N.B. 4D random rotation not supported yet
+    R = np.eye(dimension)
+    theta = np.random.rand() * 2 * np.pi
+    if dimension == 2:
+        if fixed != 'vertical':
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array([[c, -s], [s, c]], dtype=np.float32)
+
+    elif dimension == 3:
+        if fixed != 'vertical':
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+
+        else:
+            phi = (np.random.rand() - 0.5) * np.pi
+
+            # Create the first vector in carthesian coordinates
+            u = np.array([np.cos(theta) * np.cos(phi), np.sin(theta) * np.cos(phi), np.sin(phi)])
+
+            # Choose a random rotation angle
+            alpha = np.random.rand() * 2 * np.pi
+
+            # Create the rotation matrix with this vector and angle
+            R = create_3d_rotations(np.reshape(u, (1, -1)), np.reshape(alpha, (1, -1)))[0]
+
+            R = R.astype(np.float32)
+
+    # Add a small noise
+    kernel_points = kernel_points + np.random.normal(scale=0.01, size=kernel_points.shape)
+
+    # Scale kernels
+    kernel_points = radius * kernel_points
+
+    # Rotate kernels
+    kernel_points = np.matmul(kernel_points, R)
+
+    return kernel_points.astype(np.float32)

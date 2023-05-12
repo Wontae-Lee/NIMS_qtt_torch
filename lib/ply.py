@@ -171,7 +171,7 @@ def read_ply(filename, triangular_mesh=False):
             vertex_data = np.fromfile(plyfile, dtype=properties, count=num_points)
 
             # Get face data
-            face_properties = [('k', ext + 'u1'),
+            face_properties = [('kernel_size', ext + 'u1'),
                                ('v1', ext + 'i4'),
                                ('v2', ext + 'i4'),
                                ('v3', ext + 'i4')]
@@ -312,9 +312,9 @@ def write_ply(filename, field_list, field_names, triangular_faces=None):
 
         if triangular_faces is not None:
             triangular_faces = triangular_faces.astype(np.int32)
-            type_list = [('k', 'uint8')] + [(str(ind), 'int32') for ind in range(3)]
+            type_list = [('kernel_size', 'uint8')] + [(str(ind), 'int32') for ind in range(3)]
             data = np.empty(triangular_faces.shape[0], dtype=type_list)
-            data['k'] = np.full((triangular_faces.shape[0],), 3, dtype=np.uint8)
+            data['kernel_size'] = np.full((triangular_faces.shape[0],), 3, dtype=np.uint8)
             data['0'] = triangular_faces[:, 0]
             data['1'] = triangular_faces[:, 1]
             data['2'] = triangular_faces[:, 2]
